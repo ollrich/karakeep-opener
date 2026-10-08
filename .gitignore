@@ -1,0 +1,10 @@
+node_modules/
+dist/
+
+# Übergabe-Archive, nicht Teil des Repos
+*.zip
+.DS_Store
+
+# Lokale Notizen für Claude Code, nicht öffentlich
+handover.md
+CLAUDE.md

@@ -1,0 +1,61 @@
+<!doctype html>
+<html lang="de">
+<head>
+  <meta charset="utf-8">
+  <title>Karakeep Opener</title>
+  <style>
+    :root { color-scheme: light dark; }
+    body { font: 14px/1.5 system-ui, sans-serif; margin: 16px; max-width: 540px; }
+    label { display: block; margin-top: 14px; font-weight: 600; }
+    input[type=text], input[type=password], input[type=url], input[type=number] {
+      width: 100%; box-sizing: border-box; padding: 6px 8px; margin-top: 4px;
+    }
+    .check { font-weight: normal; display: flex; gap: 8px; align-items: center; }
+    .hint { opacity: 0.75; font-size: 12px; margin-top: 2px; }
+    .warn { color: light-dark(#9a5b00, #f0b45a); font-size: 12px; margin-top: 4px; }
+    .row { margin-top: 18px; }
+    button { padding: 6px 14px; }
+    #status { margin-top: 12px; white-space: pre-wrap; }
+    #status[data-kind="error"] { color: light-dark(#b03a2e, #ff8a80); }
+    #status[data-kind="warn"] { color: light-dark(#9a5b00, #f0b45a); }
+  </style>
+</head>
+<body>
+  <label for="serverUrl">Karakeep-Adresse</label>
+  <input id="serverUrl" type="url" placeholder="https://karakeep.example.de" spellcheck="false">
+  <div id="httpWarning" class="warn" hidden>Achtung: Ohne https geht der API-Schlüssel unverschlüsselt über das Netz. Nur im eigenen Heimnetz vertretbar.</div>
+
+  <label for="apiKey">API-Schlüssel</label>
+  <input id="apiKey" type="password" autocomplete="off" spellcheck="false">
+  <div class="hint">In Karakeep unter Einstellungen › API-Schlüssel. Am besten einen eigenen nur für diesen Firefox anlegen, Bookmarks mit Lesen und Schreiben genügt.</div>
+
+  <label for="tagName">Tag</label>
+  <input id="tagName" type="text" spellcheck="false">
+  <div class="hint">Lesezeichen mit diesem Tag werden geöffnet, danach wird der Tag entfernt. Nur von dir gesetzte Tags zählen, KI-Tags nicht.</div>
+
+  <label for="intervalMinutes">Abfrage alle … Minuten</label>
+  <input id="intervalMinutes" type="number" min="0" max="1440" step="1">
+  <div class="hint">Unabhängig davon fragt die Erweiterung beim Start von Firefox ab, wenn du zu Firefox wechselst, wenn du nach einer Pause an den Rechner zurückkehrst und bei einem Klick aufs Symbol. 0 schaltet die regelmäßige Abfrage ab.</div>
+
+  <label for="maxPerRun">Höchstens … Tabs pro Abfrage</label>
+  <input id="maxPerRun" type="number" min="1" max="100" step="1">
+  <div class="hint">Schutz vor einer Tab-Flut. Was darüber hinausgeht, zeigt das Symbol als Zahl an und kommt bei der nächsten Abfrage.</div>
+
+  <label class="check"><input id="lazyTabs" type="checkbox"> Tabs erst beim Anklicken laden</label>
+  <div class="hint">Neue Tabs erscheinen sofort mit Titel in der Tableiste, die Seite lädt aber erst, wenn du den Tab anklickst. Spart Speicher und Bandbreite, wenn viele Links auf einmal kommen.</div>
+
+  <label class="check"><input id="activateTabs" type="checkbox"> Zum ersten neuen Tab wechseln</label>
+  <div class="hint">Aus: Neue Tabs öffnen sich im Hintergrund, du bleibst auf deiner aktuellen Seite. An: Firefox springt zum ersten geöffneten Link.</div>
+
+  <label class="check"><input id="archiveAfterOpen" type="checkbox"> Lesezeichen nach dem Öffnen archivieren</label>
+  <div class="hint">Das Lesezeichen bleibt in Karakeep erhalten, verschwindet aber aus der normalen Ansicht.</div>
+
+  <div class="row">
+    <button id="save" type="button">Speichern und prüfen</button>
+  </div>
+  <div id="status" role="status"></div>
+
+  <script src="common.js"></script>
+  <script src="options.js"></script>
+</body>
+</html>

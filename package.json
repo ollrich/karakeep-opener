@@ -1,0 +1,15 @@
+{
+  "name": "karakeep-opener",
+  "private": true,
+  "description": "Firefox-Erweiterung: öffnet Karakeep-Lesezeichen mit einem bestimmten Tag automatisch als Tabs.",
+  "scripts": {
+    "test": "node --test test/*.test.js",
+    "lint": "web-ext lint --source-dir extension",
+    "build": "web-ext build --source-dir extension --artifacts-dir dist --overwrite-dest",
+    "start": "web-ext run --source-dir extension"
+  },
+  "devDependencies": {
+    "jsdom": "^24.1.3",
+    "web-ext": "^10.7.0"
+  }
+}
