@@ -34,11 +34,18 @@ Karakeep Opener ist eine Firefox-Erweiterung für alle, die eine eigene [Karakee
 
 ### Installation
 
-Die Erweiterung ist auf addons.mozilla.org **nicht gelistet**, sondern nur für den Eigengebrauch signiert. Es gibt drei Wege:
+Die Erweiterung ist auf addons.mozilla.org **nicht gelistet**, aber von Mozilla signiert. Die signierte Datei liegt bei den Releases:
+
+1. `karakeep_opener-X.Y.Z.xpi` aus den [Releases](https://github.com/ollrich/karakeep-opener/releases) laden.
+2. Die Datei in ein Firefox-Fenster ziehen und die Installation bestätigen.
+
+Updates kommen nicht automatisch: neue Version laden und genauso installieren, die Einstellungen bleiben erhalten.
+
+Zum Entwickeln oder Anpassen:
 
 - **Zum Ausprobieren:** Repo klonen, in Firefox `about:debugging` → *Dieser Firefox* → *Temporäres Add-on laden* → `extension/manifest.json` wählen. Hält bis zum Neustart von Firefox.
 - **Mit Node:** `npm install` und `npm run start` starten ein frisches Firefox mit geladener Erweiterung.
-- **Dauerhaft:** Mit eigenem Konto bei addons.mozilla.org als „Auf eigene Faust“ signieren lassen. Dafür vorher die Erweiterungs-ID in `extension/manifest.json` ändern, die vorhandene ist fest an das Konto des Autors gebunden.
+- **Eigene Fassung dauerhaft:** Mit eigenem Konto bei addons.mozilla.org als „Auf eigene Faust“ signieren lassen. Dafür vorher die Erweiterungs-ID in `extension/manifest.json` ändern, die vorhandene ist fest an das Konto des Autors gebunden.
 
 Voraussetzung ist Firefox 142 oder neuer.
 
@@ -116,11 +123,18 @@ The user interface is in German.
 
 ### Installation
 
-The extension is **not listed** on addons.mozilla.org, it is only signed for personal use. Three ways to run it:
+The extension is **not listed** on addons.mozilla.org, but it is signed by Mozilla. The signed file is attached to the releases:
+
+1. Download `karakeep_opener-X.Y.Z.xpi` from the [Releases](https://github.com/ollrich/karakeep-opener/releases).
+2. Drag the file into a Firefox window and confirm the installation.
+
+Updates are not automatic: download the new version and install it the same way, your settings are kept.
+
+For development or your own changes:
 
 - **To try it out:** clone the repo, open `about:debugging` in Firefox → *This Firefox* → *Load Temporary Add-on* → pick `extension/manifest.json`. Lasts until Firefox restarts.
 - **With Node:** `npm install` and `npm run start` launch a fresh Firefox with the extension loaded.
-- **Permanently:** have it signed as “On your own” with your own addons.mozilla.org account. Change the extension ID in `extension/manifest.json` first, the existing one is bound to the author's account.
+- **Your own build, permanently:** have it signed as “On your own” with your own addons.mozilla.org account. Change the extension ID in `extension/manifest.json` first, the existing one is bound to the author's account.
 
 Requires Firefox 142 or newer.
 

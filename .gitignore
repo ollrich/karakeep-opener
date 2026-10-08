@@ -3,6 +3,7 @@ dist/
 
 # Übergabe-Archive, nicht Teil des Repos
 *.zip
+*.xpi
 .DS_Store
 
 # Lokale Notizen für Claude Code, nicht öffentlich
