@@ -11,7 +11,7 @@ Offene Punkte und Ideen, die laufende Arbeitsliste.
 
 ## Offen
 
-- **1.2.0 im echten Firefox testen:** Bisher nur gegen die Nachbildungen geprüft. Erster Lauf mit `npm run start`.
+- **1.3.0 im echten Firefox testen und bei AMO signieren:** Bisher nur gegen die Nachbildungen geprüft. Erster Lauf mit `npm run start`, danach Upload „Auf eigene Faust“ und die signierte .xpi ans Release v1.3.0.
 - **Ruhezustand prüfen:** Meldet Firefox nach dem Aufwachen zuverlässig erst „idle“, dann „active“? Kennt Firefox „locked“? Bis dahin die regelmäßige Abfrage (2 bis 5 Minuten) als Sicherheitsnetz eingeschaltet lassen.
 - **Signieren automatisieren:** `web-ext sign --channel unlisted` mit AMO-API-Zugangsdaten als Secrets, etwa als Release-Workflow bei `v*`-Tags, der die signierte .xpi gleich ans Release hängt. Parameter vorher mit `npx web-ext sign --help` prüfen.
 
