@@ -387,3 +387,204 @@ test("Installation öffnet Einstellungen, Update nicht", async () => {
   await fire(env, "runtime.onInstalled", { reason: "install" });
   assert.equal(env.optionsOpened, 1);
 });
+
+// Fehlerbehebungen aus 1.3.0
+
+// Objekte aus dem vm-Kontext stammen aus einem anderen Realm.
+const plain = (o) => JSON.parse(JSON.stringify(o ?? null));
+
+test("#1: Minimalrechte genügen für alles, auch Archivieren", async () => {
+  const env = makeEnv();
+  env.configure({ archiveAfterOpen: true });
+  assert.deepEqual(env.server.scopes, ["bookmarks:readwrite", "tags:read"]);
+  seedMixed(env);
+  await loadBackground(env);
+  await fire(env, "action.onClicked");
+  assert.equal(env.tabs.length, 5);
+  assert.equal(env.server.bookmarks.filter((b) => b.archived).length, 5);
+  assert.equal(env.badge, "");
+});
+
+test("#1: fehlendes Recht Tags Lesen wird beim Namen genannt", async () => {
+  const env = makeEnv();
+  env.configure();
+  env.server.scopes = ["bookmarks:readwrite"];
+  seedMixed(env);
+  await loadBackground(env);
+  await fire(env, "action.onClicked");
+  assert.equal(env.badge, "!");
+  assert.match(env.title, /Berechtigung „Tags: Lesen“ \(tags:read, HTTP 403\)/);
+  assert.equal(env.alarms.has("karakeep-retry"), false);
+  assert.equal(env.tabs.length, 0);
+});
+
+test("#1: nur Lesezeichen Lesen: fehlendes Schreibrecht wird genannt, Link geht nicht verloren", async () => {
+  const env = makeEnv();
+  env.configure();
+  env.server.scopes = ["bookmarks:read", "tags:read"];
+  seedMixed(env);
+  await loadBackground(env);
+  await fire(env, "action.onClicked");
+  assert.match(env.title, /„Lesezeichen: Lesen\/Schreiben“/);
+  assert.equal(env.tabs.length, 0);
+  assert.equal(env.server.attachedBy("b1", "t1"), "human");
+});
+
+test("#2: Tab scheitert und Tag lässt sich nicht zurücksetzen: Link bleibt vorgemerkt und kommt", async () => {
+  const env = makeEnv();
+  env.configure();
+  seedMixed(env);
+  env.tabCreateFail = "Not allowed to create tabs on the target window";
+  env.server.failMethod = { POST: 503 };
+  await loadBackground(env);
+  await fire(env, "action.onClicked");
+  assert.equal(env.server.hasTag("b1", "t1"), false, "Tag ist weg");
+  assert.deepEqual(plain(env.local.handoffs), { b1: { server: "https://kk.test", step: "claim" } });
+  assert.equal(env.badge, "…", "Wiederholung geplant statt aufgegeben");
+  assert.match(env.title, /vorgemerkt/);
+  // Wiederholung, nachdem Firefox und Server sich erholt haben
+  env.tabCreateFail = null;
+  env.server.failMethod = {};
+  await loadBackground(env);
+  await fire(env, "alarms.onAlarm", { name: "karakeep-retry" });
+  assert.deepEqual(env.tabs.map((t) => t.url)[0], "https://a.example/1", "Link kommt in der alten Reihenfolge");
+  assert.equal(env.tabs.length, 5);
+  assert.deepEqual(plain(env.local.handoffs), {});
+  assert.equal(env.badge, "");
+});
+
+test("#2: Firefox endet zwischen Tag-Entfernen und Tab: Link kommt nach dem Neustart", async () => {
+  const env = makeEnv();
+  env.configure();
+  seedMixed(env);
+  env.tabCreateHang = true;
+  await loadBackground(env);
+  fire(env, "runtime.onStartup");
+  await flush(60);
+  assert.equal(env.server.hasTag("b1", "t1"), false);
+  assert.equal(env.local.handoffs.b1.step, "claim");
+  // Firefox beendet, Hintergrundskript neu, Sitzungsspeicher leer
+  env.tabCreateHang = false;
+  env.session = {};
+  await loadBackground(env);
+  await fire(env, "runtime.onStartup");
+  assert.equal(env.tabs.length, 5);
+  assert.equal(env.tabs[0].url, "https://a.example/1");
+  assert.deepEqual(plain(env.local.handoffs), {});
+});
+
+test("#2: abgeschlossene Übergaben hinterlassen keine Notiz, nichts zu tun kostet weiter eine Anfrage", async () => {
+  const env = makeEnv();
+  env.configure();
+  seedMixed(env);
+  await loadBackground(env);
+  await fire(env, "action.onClicked");
+  assert.deepEqual(plain(env.local.handoffs), {});
+  assert.equal(env.requests.filter((r) => r.method === "PATCH").length, 0, "ohne Archiv-Option kein PATCH");
+  env.requests.length = 0;
+  env.session.lastPollAt = 0;
+  await fire(env, "alarms.onAlarm", { name: "karakeep-poll" });
+  assert.deepEqual(apiCalls(env), ["GET /api/v1/tags"]);
+});
+
+test("#2: Notiz zu einem anderen Server wird verworfen, ohne Anfrage dorthin", async () => {
+  const env = makeEnv();
+  env.configure();
+  env.server.addTag("t1", "an-firefox");
+  env.local.handoffs = { x1: { server: "https://alt.test", step: "claim" } };
+  await loadBackground(env);
+  await fire(env, "runtime.onStartup");
+  assert.deepEqual(apiCalls(env), ["GET /api/v1/tags"]);
+  assert.deepEqual(plain(env.local.handoffs), {});
+});
+
+test("#3: Archivieren scheitert vorübergehend: wird nachgeholt, ohne neuen Tab", async () => {
+  const env = makeEnv();
+  env.configure({ archiveAfterOpen: true });
+  seedMixed(env);
+  env.server.failMethod = { PATCH: 503 };
+  await loadBackground(env);
+  await fire(env, "action.onClicked");
+  assert.equal(env.tabs.length, 5, "Tabs sind trotzdem offen");
+  assert.equal(env.badge, "…");
+  assert.match(env.title, /5 Links geöffnet\. Archivieren in Karakeep gescheitert .*Wird nachgeholt/);
+  assert.deepEqual(Object.keys(env.local.handoffs).sort(), ["b1", "b3", "b4", "b5", "b6"]);
+  assert.ok(Object.values(env.local.handoffs).every((h) => h.step === "archive"));
+  // Neustart, dann klappt es
+  env.server.failMethod = {};
+  await loadBackground(env);
+  await fire(env, "alarms.onAlarm", { name: "karakeep-retry" });
+  assert.equal(env.tabs.length, 5, "kein Tab doppelt");
+  assert.deepEqual(env.server.bookmarks.filter((b) => b.archived).map((b) => b.id), ["b1", "b3", "b4", "b5", "b6"]);
+  assert.equal(env.server.attachedBy("b2", "t1"), "ai", "andere Tags unberührt");
+  assert.deepEqual(plain(env.local.handoffs), {});
+  assert.equal(env.badge, "");
+});
+
+test("#3: Archivieren scheitert dauerhaft: rot, keine Endlosschleife", async () => {
+  const env = makeEnv();
+  env.configure({ archiveAfterOpen: true });
+  seedMixed(env);
+  env.server.failMethod = { PATCH: 400 };
+  await loadBackground(env);
+  await fire(env, "action.onClicked");
+  assert.equal(env.tabs.length, 5);
+  assert.equal(env.badge, "!");
+  assert.match(env.title, /Archivieren in Karakeep gescheitert \(Unerwartete Antwort HTTP 400/);
+  assert.equal(env.alarms.has("karakeep-retry"), false);
+  assert.deepEqual(plain(env.local.handoffs), {}, "nichts bleibt zum Wiederholen liegen");
+});
+
+test("#4: Klick während einer automatischen Abfrage erzwingt eine Prüfung danach", async () => {
+  const env = makeEnv();
+  env.configure();
+  seedMixed(env);
+  env.server.wrongCount = true; // automatische Abfrage sieht 0 und hört auf
+  await loadBackground(env);
+  let release;
+  env.server.gate = new Promise((r) => (release = r));
+  env.listeners["runtime.onStartup"][0]();
+  await flush();
+  env.listeners["action.onClicked"][0]();
+  env.listeners["action.onClicked"][0](); // zweiter Klick wird zusammengefasst
+  env.server.gate = null;
+  release();
+  await flush(120);
+  assert.equal(env.tabs.length, 5);
+  assert.equal(env.requests.filter((r) => r.url.startsWith("/api/v1/tags?")).length, 2, "genau eine Abfrage danach");
+});
+
+test("#4: Speichern und prüfen während einer Abfrage nutzt die neuen Einstellungen", async () => {
+  const env = makeEnv();
+  env.configure({ tagName: "alt" });
+  seedMixed(env);
+  await loadBackground(env);
+  let release;
+  env.server.gate = new Promise((r) => (release = r));
+  env.listeners["runtime.onStartup"][0]();
+  await flush();
+  env.local.tagName = "an-firefox";
+  const reply = env.listeners["runtime.onMessage"][0]({ type: "poll-now" }, { id: manifest.browser_specific_settings.gecko.id });
+  env.server.gate = null;
+  release();
+  const result = await reply;
+  assert.equal(result.opened, 5);
+  assert.match(result.message, /5 Links geöffnet/);
+});
+
+test("#5: über 20 Seiten KI-Tags vor dem eigenen Link: ehrliche Meldung statt leerer Liste", async () => {
+  const env = makeEnv();
+  env.configure();
+  env.server.addTag("t1", "an-firefox");
+  for (let i = 0; i < 1001; i++) {
+    env.server.add({ id: `ai${i}`, content: { type: "link", url: `https://ai.example/${i}` }, tags: [{ id: "t1", name: "an-firefox", attachedBy: "ai" }] });
+  }
+  env.server.add({ id: "mine", content: { type: "link", url: "https://mine.example" }, tags: [{ id: "t1", name: "an-firefox", attachedBy: "human" }] });
+  await loadBackground(env);
+  await fire(env, "runtime.onStartup");
+  assert.equal(env.requests.filter((r) => r.url.includes("/bookmarks?")).length, 20, "Seitenlimit gilt weiter");
+  assert.equal(env.tabs.length, 0);
+  assert.equal(env.badge, "!");
+  assert.match(env.title, /keines von dir markiert, nur von der KI/);
+  assert.doesNotMatch(env.title, /Keine wartenden Links/);
+});
