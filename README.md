@@ -29,7 +29,7 @@ Karakeep Opener ist eine Firefox-Erweiterung für alle, die eine eigene [Karakee
 - **Keine Tab-Flut:** höchstens 20 Tabs pro Abfrage (einstellbar), der Rest wartet als `+N` am Symbol.
 - **Verzögertes Laden:** Hintergrund-Tabs erscheinen sofort mit Titel, laden aber erst beim Anklicken.
 - **Optional archivieren:** Lesezeichen nach dem Öffnen in Karakeep archivieren.
-- **Robust:** Netzwerkfehler, Zeitüberschreitungen und Serverfehler werden gestaffelt wiederholt (nach 0,5, 1, 2, 5 und 10 Minuten). Gibt es gerade kein Firefox-Fenster, wartet der Link aufs nächste.
+- **Robust:** Netzwerkfehler, Zeitüberschreitungen und Serverfehler werden gestaffelt wiederholt (nach 0,5, 1, 2, 5 und 10 Minuten). Gibt es gerade kein Firefox-Fenster, wartet der Link aufs nächste. Wird Firefox mitten in einer Übergabe beendet oder scheitert das Archivieren, holt die Erweiterung das beim nächsten Mal nach.
 - **Status am Symbol:** `?` Einrichtung unvollständig, `…` Wiederholung geplant, `!` dauerhafter Fehler, `+N` weitere Links warten. Der Tooltip nennt Uhrzeit, Auslöser und Meldung.
 
 ### Installation
@@ -51,7 +51,7 @@ Voraussetzung ist Firefox 142 oder neuer.
 
 ### Einrichtung
 
-In Karakeep unter *Einstellungen → API-Schlüssel* einen eigenen Schlüssel nur für diesen Firefox anlegen. Rechte: **Bookmarks Lesen und Schreiben**, alles andere aus.
+In Karakeep unter *Einstellungen → API-Schlüssel* einen eigenen Schlüssel nur für diesen Firefox anlegen, mit eingeschränkten Berechtigungen: **Lesezeichen: Lesen/Schreiben** und **Tags: Lesen**, alles andere auf *Keine*. Fehlt eine davon, nennt das Symbol sie beim Namen.
 
 Dann in Firefox unter *Add-ons → Karakeep Opener → Einstellungen*:
 
@@ -69,6 +69,7 @@ Keine Telemetrie, kein Analytics, keine Datensammlung (`data_collection_permissi
 ### Bekannte Grenzen
 
 - Läuft die Erweiterung in zwei Firefox-Installationen gleichzeitig, kann ein Link in beiden aufgehen. Das Entfernen des Tags ist keine atomare Reservierung.
+- Wird Firefox genau in dem Moment beendet, in dem ein Tab aufgeht, kommt der Link beim nächsten Start noch einmal. Doppelt ist hier bewusst besser als verloren.
 - Wer in deinem Karakeep taggen darf, kann Seiten in deinem Firefox öffnen lassen. Darum gehen nur http und https auf.
 
 ### Roadmap
@@ -116,7 +117,7 @@ Karakeep Opener is a Firefox extension for anyone running their own [Karakeep](h
 - **No tab flood:** at most 20 tabs per poll (configurable), the rest waits as `+N` on the icon.
 - **Lazy loading:** background tabs appear immediately with their title but only load when you click them.
 - **Optional archiving:** archive bookmarks in Karakeep after opening.
-- **Resilient:** network errors, timeouts and server errors are retried with backoff (after 0.5, 1, 2, 5 and 10 minutes). If no Firefox window is open, the link waits for the next one.
+- **Resilient:** network errors, timeouts and server errors are retried with backoff (after 0.5, 1, 2, 5 and 10 minutes). If no Firefox window is open, the link waits for the next one. If Firefox quits in the middle of a handoff or archiving fails, the extension catches up next time.
 - **Status on the icon:** `?` setup incomplete, `…` retry scheduled, `!` permanent error, `+N` more links waiting. The tooltip shows time, trigger and message.
 
 The user interface is in German.
@@ -140,7 +141,7 @@ Requires Firefox 142 or newer.
 
 ### Setup
 
-In Karakeep, under *Settings → API Keys*, create a dedicated key just for this Firefox. Permissions: **Bookmarks read and write**, everything else off.
+In Karakeep, under *Settings → API Keys*, create a dedicated key just for this Firefox with limited scopes: **Bookmarks: Read/write** and **Tags: Read**, everything else *None*. If one is missing, the icon names it.
 
 Then in Firefox under *Add-ons → Karakeep Opener → Options*:
 
@@ -158,6 +159,7 @@ No telemetry, no analytics, no data collection (`data_collection_permissions: no
 ### Known limitations
 
 - If the extension runs in two Firefox installations at once, a link may open in both. Removing the tag is not an atomic reservation.
+- If Firefox quits exactly while a tab is opening, the link comes again on the next start. Twice is deliberately better than lost.
 - Anyone who can tag bookmarks in your Karakeep can make your Firefox open pages. That's why only http and https are opened.
 
 ### Roadmap

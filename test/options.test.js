@@ -14,7 +14,16 @@ const flush = async (n = 20) => {
   for (let i = 0; i < n; i++) await new Promise((r) => setImmediate(r));
 };
 
-async function page({ stored = {}, title = manifest.action.default_title, grant = true, reply, replyError } = {}) {
+async function page({
+  stored = {},
+  title = manifest.action.default_title,
+  grant = true,
+  reply,
+  replyError,
+  requestError,
+  setError,
+  hold = false,
+} = {}) {
   const dom = new JSDOM(html, { runScripts: "dangerously" });
   const w = dom.window;
   const st = {
@@ -22,13 +31,17 @@ async function page({ stored = {}, title = manifest.action.default_title, grant 
     sets: [],
     requests: [],
     messages: [],
+    removed: [],
     inClick: false,
+    release: null,
   };
+  const gate = hold ? new Promise((r) => (st.release = r)) : null;
   w.browser = {
     storage: {
       local: {
         get: async (defaults) => Object.fromEntries(Object.entries(defaults).map(([k, d]) => [k, k in st.stored ? st.stored[k] : d])),
         set: async (obj) => {
+          if (setError) throw new Error(setError);
           st.sets.push(JSON.parse(JSON.stringify(obj)));
           Object.assign(st.stored, obj);
         },
@@ -37,7 +50,13 @@ async function page({ stored = {}, title = manifest.action.default_title, grant 
     permissions: {
       request: async ({ origins }) => {
         st.requests.push({ origins: JSON.parse(JSON.stringify(origins)), duringClick: st.inClick });
+        if (gate) await gate;
+        if (requestError) throw new Error(requestError);
         return grant;
+      },
+      remove: async ({ origins }) => {
+        st.removed.push(...JSON.parse(JSON.stringify(origins)));
+        return true;
       },
     },
     action: { getTitle: async () => title },
@@ -178,4 +197,89 @@ test("Prüfung meldet Fehler oder Wiederholung", async () => {
 test("letzter Stand wird beim Öffnen angezeigt", async () => {
   const { $ } = await page({ title: "Karakeep Opener, 09:41 (Start): Keine wartenden Links." });
   assert.equal($("status").textContent, "Letzter Stand: Karakeep Opener, 09:41 (Start): Keine wartenden Links.");
+});
+
+// Fehlerbehebungen aus 1.3.0
+
+test("#1: Hinweis nennt beide nötigen Rechte", async () => {
+  const { $ } = await page();
+  const hint = $("apiKey").nextElementSibling.textContent;
+  assert.match(hint, /Lesezeichen Lesen\/Schreiben/);
+  assert.match(hint, /Tags Lesen/);
+});
+
+test("#7: Serverwechsel entfernt die alte Berechtigung", async () => {
+  const { st, click, type } = await page({ stored: { serverUrl: "https://alt.test", apiKey: "KEY" } });
+  type("serverUrl", "https://kk.test");
+  await click();
+  assert.deepEqual(st.removed, ["https://alt.test/*"]);
+  // Weiterer Wechsel: jetzt ist kk.test die alte Adresse
+  type("serverUrl", "http://nas.local");
+  await click();
+  assert.deepEqual(st.removed, ["https://alt.test/*", "https://kk.test/*"]);
+});
+
+test("#7: gleicher Host mit anderem Port oder Pfad behält die Berechtigung", async () => {
+  const { st, click, type } = await page({ stored: { serverUrl: "https://kk.test:3000", apiKey: "KEY" } });
+  type("serverUrl", "https://kk.test/karakeep");
+  await click();
+  assert.equal(st.sets.length, 1);
+  assert.deepEqual(st.removed, []);
+});
+
+test("#7: Erstes Einrichten oder abgelehnte Rückfrage entfernt nichts", async () => {
+  {
+    const { st, click, type } = await page();
+    type("serverUrl", "https://kk.test");
+    type("apiKey", "KEY");
+    await click();
+    assert.deepEqual(st.removed, []);
+  }
+  {
+    const { st, click, type } = await page({ stored: { serverUrl: "https://alt.test", apiKey: "KEY" }, grant: false });
+    type("serverUrl", "https://kk.test");
+    await click();
+    assert.equal(st.sets.length, 0);
+    assert.deepEqual(st.removed, []);
+  }
+});
+
+test("#8: Rückfrage scheitert: verständliche Meldung, nichts gespeichert, Knopf wieder frei", async () => {
+  const { $, st, click, type } = await page({ requestError: "internal boom" });
+  type("serverUrl", "https://kk.test");
+  type("apiKey", "KEY");
+  await click();
+  assert.equal(st.sets.length, 0);
+  assert.equal(st.messages.length, 0);
+  assert.equal($("status").dataset.kind, "error");
+  assert.match($("status").textContent, /Zugriff auf den Server nicht anfragen/);
+  assert.doesNotMatch($("status").textContent, /boom/);
+  assert.equal($("save").disabled, false);
+});
+
+test("#8: Speichern scheitert: keine Erfolgsmeldung, keine Prüfung, Knopf wieder frei", async () => {
+  const { $, st, click, type } = await page({ setError: "QuotaExceededError" });
+  type("serverUrl", "https://kk.test");
+  type("apiKey", "KEY");
+  await click();
+  assert.equal(st.messages.length, 0);
+  assert.equal($("status").dataset.kind, "error");
+  assert.match($("status").textContent, /ließen sich nicht speichern/);
+  assert.doesNotMatch($("status").textContent, /Gespeichert/);
+  assert.equal($("save").disabled, false);
+});
+
+test("#8: Doppelklick löst nur einen Speichervorgang aus", async () => {
+  const { $, st, type } = await page({ hold: true });
+  type("serverUrl", "https://kk.test");
+  type("apiKey", "KEY");
+  $("save").click();
+  assert.equal($("save").disabled, true, "während des Speicherns gesperrt");
+  $("save").click();
+  st.release();
+  await flush();
+  assert.equal(st.requests.length, 1);
+  assert.equal(st.sets.length, 1);
+  assert.equal(st.messages.length, 1);
+  assert.equal($("save").disabled, false);
 });

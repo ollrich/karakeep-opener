@@ -25,7 +25,12 @@ function makeServer() {
     bookmarks: [], // {id, createdAt, title, content, tags:[{id,name,attachedBy}], archived}
     wrongCount: false,
     failMode: null, // "network" | "timeout" | 401 | 500 | "html"
+    failMethod: {}, // etwa { PATCH: 503, POST: "network" }: nur diese Methode scheitert
     deleteTagAfterList: false,
+    // Rechte des API-Schlüssels wie in Karakeep (seit v0.32). Standard ist das
+    // Minimum, das die Erweiterung braucht; null steht für Vollzugriff.
+    scopes: ["bookmarks:readwrite", "tags:read"],
+    gate: null, // Promise: Antworten warten, bis sie erfüllt ist
   };
   s.addTag = (id, name) => s.tags.set(id, name);
   s.add = (bm) => {
@@ -41,19 +46,22 @@ function makeFetch(env) {
     const u = new URL(url);
     const method = init.method || "GET";
     env.requests.push({ method, url: u.pathname + u.search, init });
-    const srv = env.server;
-    if (srv.failMode === "network") throw new TypeError("NetworkError when attempting to fetch resource.");
-    if (srv.failMode === "timeout") {
-      const e = new Error("The operation timed out.");
-      e.name = "TimeoutError";
-      throw e;
-    }
     const reply = (status, obj) => ({
       ok: status >= 200 && status < 300,
       status,
       text: async () => (obj === undefined ? "" : typeof obj === "string" ? obj : JSON.stringify(obj)),
       json: async () => JSON.parse(typeof obj === "string" ? obj : JSON.stringify(obj)),
     });
+    const srv = env.server;
+    if (srv.gate) await srv.gate;
+    if (srv.failMethod[method] === "network") throw new TypeError("NetworkError when attempting to fetch resource.");
+    if (typeof srv.failMethod[method] === "number") return reply(srv.failMethod[method], { code: "x", message: "fail" });
+    if (srv.failMode === "network") throw new TypeError("NetworkError when attempting to fetch resource.");
+    if (srv.failMode === "timeout") {
+      const e = new Error("The operation timed out.");
+      e.name = "TimeoutError";
+      throw e;
+    }
     if (typeof srv.failMode === "number") return reply(srv.failMode, { code: "x", message: "fail" });
     if (srv.failMode === "html") return reply(200, "<html>WLAN Login</html>");
     assert.equal(init.headers.Authorization, "Bearer KEY", "Authorization-Header fehlt");
@@ -63,6 +71,18 @@ function makeFetch(env) {
     else assert.equal(init.headers["Content-Type"], "application/json");
     assert.ok(u.pathname.startsWith("/api/v1/"), "Pfad beginnt mit /api/v1");
     const p = u.pathname.slice("/api/v1".length);
+
+    // Rechteprüfung wie in Karakeep: GET /tags braucht tags:read, alles rund um
+    // Lesezeichen (auch GET /tags/<id>/bookmarks) läuft über bookmarks.
+    // readwrite schließt read ein. Die Antwort ist Klartext (hono HTTPException).
+    const needed =
+      method === "GET" && p === "/tags" ? "tags:read" : method === "GET" ? "bookmarks:read" : "bookmarks:readwrite";
+    const [resource, access] = needed.split(":");
+    const allowed =
+      srv.scopes === null ||
+      srv.scopes.includes(needed) ||
+      (access === "read" && srv.scopes.includes(`${resource}:readwrite`));
+    if (!allowed) return reply(403, `API key is missing required scope: ${needed}`);
 
     let m;
     if (method === "GET" && p === "/tags") {
@@ -134,6 +154,7 @@ function makeEnv() {
     listeners: {},
     timers: [],
     tabCreateFail: null,
+    tabCreateHang: false, // tabs.create kehrt nie zurück, etwa weil Firefox gerade beendet wird
     optionsOpened: 0,
     idleInterval: null,
     permissionRequests: [],
@@ -198,6 +219,7 @@ function makeBrowser(env) {
       create: async (p) => {
         if (env.windows.length === 0) throw new Error("Not allowed to create tabs on the target window");
         if (env.tabCreateFail) throw new Error(env.tabCreateFail);
+        if (env.tabCreateHang) return new Promise(() => {});
         const active = p.active ?? true;
         if (p.discarded) {
           if (active) throw new Error("Active tabs cannot be created and discarded.");

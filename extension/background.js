@@ -11,14 +11,18 @@ const REQUEST_TIMEOUT_MS = 15 * 1000;
 const IDLE_SECONDS = 60;
 const PAGE_SIZE = 50;
 const MAX_PAGES = 20;
+const HANDOFFS_KEY = "handoffs";
 
 const BADGE_COLORS = { info: "#2f5d8a", wait: "#6b6b6b", error: "#c0392b" };
 
 // Firefox entlädt das Hintergrundskript nach kurzer Untätigkeit. Globale
 // Variablen überleben das nicht, deshalb liegt alles, was länger halten muss,
-// in storage.session. "inflight" gilt nur für eine laufende Abfrage: Weitere
-// Auslöser in dieser Zeit hängen sich an dieselbe Abfrage an.
+// in storage.session oder storage.local. Die drei Variablen hier gelten nur
+// für eine laufende Abfrage: Weitere Auslöser in dieser Zeit hängen sich an
+// dieselbe Abfrage an oder an genau eine Abfrage direkt danach.
 let inflight = null;
+let inflightForced = false;
+let followUp = null;
 
 class PollError extends Error {
   constructor(message, { status = 0, retryable = false } = {}) {
@@ -39,11 +43,24 @@ async function getSettings() {
 
 // Karakeep API
 
-function httpError(status, path) {
+// So heißen die Rechte in der Karakeep-Oberfläche.
+const SCOPE_LABELS = { bookmarks: "Lesezeichen", tags: "Tags", read: "Lesen", readwrite: "Lesen/Schreiben" };
+
+function httpError(status, path, body = "") {
   if (status === 401) {
     return new PollError("API-Schlüssel ungültig oder widerrufen (HTTP 401).", { status });
   }
   if (status === 403) {
+    // Karakeep nennt das fehlende Recht im Klartext, etwa
+    // "API key is missing required scope: tags:read".
+    const m = /missing required scope: ([a-z]+):(readwrite|read)\b/i.exec(body);
+    if (m) {
+      const label = `${SCOPE_LABELS[m[1]] || m[1]}: ${SCOPE_LABELS[m[2]]}`;
+      return new PollError(
+        `Dem API-Schlüssel fehlt in Karakeep die Berechtigung „${label}“ (${m[1]}:${m[2]}, HTTP 403).`,
+        { status },
+      );
+    }
     return new PollError("Dem API-Schlüssel fehlt eine Berechtigung (HTTP 403).", { status });
   }
   if (status === 429 || status >= 500) {
@@ -78,7 +95,7 @@ async function api(settings, path, { method = "GET", body } = {}) {
       retryable: true,
     });
   }
-  if (!res.ok) throw httpError(res.status, path);
+  if (!res.ok) throw httpError(res.status, path, text);
   if (!text) return null;
   try {
     return JSON.parse(text);
@@ -95,6 +112,83 @@ function setTag(settings, bookmarkId, tagId, method) {
     method,
     body: { tags: [{ tagId }] },
   });
+}
+
+function archive(settings, bookmarkId) {
+  return api(settings, `/bookmarks/${encodeURIComponent(bookmarkId)}`, {
+    method: "PATCH",
+    body: { archived: true },
+  });
+}
+
+const isGone = (err) => err instanceof PollError && err.status === 404;
+
+// Fehler, nach denen ein späterer Versuch Sinn hat: vorübergehende Fehler und
+// fehlende Rechte, die du in Karakeep nachtragen kannst.
+const worthRetrying = (err) =>
+  !(err instanceof PollError) || err.retryable || err.status === 401 || err.status === 403;
+
+// Übergabe-Notizen
+//
+// Zwischen dem Entfernen des Tags und dem offenen Tab kann etwas schiefgehen:
+// Das Wiederherstellen des Tags scheitert, oder Firefox wird genau dann
+// beendet. Damit der Link dann nicht verloren geht, liegt für jedes
+// Lesezeichen in Arbeit eine Notiz in storage.local:
+//   step "claim":   Tag wird entfernt, der Tab ist noch nicht sicher offen.
+//   step "archive": Tab ist offen, das Archivieren steht noch aus.
+// Fertige Lesezeichen verschwinden aus der Liste. Eine vollständig atomare
+// Übergabe zwischen Karakeep und Firefox gibt es nicht: Endet Firefox, nachdem
+// der Tab aufging, aber bevor die Notiz aktualisiert ist, kommt der Link noch
+// einmal. Doppelt ist besser als verloren.
+
+async function getHandoffs() {
+  const { [HANDOFFS_KEY]: handoffs = {} } = await browser.storage.local.get(HANDOFFS_KEY);
+  return handoffs;
+}
+
+async function setHandoff(bookmarkId, entry) {
+  const handoffs = { ...(await getHandoffs()) };
+  if (entry) handoffs[bookmarkId] = entry;
+  else delete handoffs[bookmarkId];
+  await browser.storage.local.set({ [HANDOFFS_KEY]: handoffs });
+}
+
+// Holt nach, was frühere Abfragen nicht abschließen konnten. Liefert die Zahl
+// der Links, die wieder markiert wurden und jetzt erneut in der Liste stehen.
+async function recoverHandoffs(settings, tag) {
+  const handoffs = await getHandoffs();
+  let requeued = 0;
+  for (const [id, h] of Object.entries(handoffs)) {
+    if (h.server !== settings.serverUrl) {
+      // Notiz zu einem anderen Server, an den diese Einstellungen nicht mehr kommen.
+      await setHandoff(id, null);
+      continue;
+    }
+    if (h.step === "claim") {
+      if (!tag) continue; // Ohne Tag in Karakeep lässt sich nichts zurücklegen.
+      // Ob der Tab noch aufging, ist unbekannt. Den Tag wieder setzen: Dann
+      // kommt der Link sicher noch einmal.
+      try {
+        await setTag(settings, id, tag.id, "POST");
+        requeued++;
+      } catch (err) {
+        if (!isGone(err)) throw err; // Lesezeichen gelöscht: nichts mehr zu tun
+      }
+      await setHandoff(id, null);
+    } else if (h.step === "archive") {
+      if (settings.archiveAfterOpen) {
+        try {
+          await archive(settings, id);
+        } catch (err) {
+          if (worthRetrying(err)) throw err;
+          await setHandoff(id, null);
+          if (!isGone(err)) throw new PollError(`Archivieren gescheitert: ${err.message}`, { status: err.status });
+        }
+      }
+      await setHandoff(id, null);
+    }
+  }
+  return requeued;
 }
 
 async function findTag(settings) {
@@ -124,10 +218,15 @@ function pendingCount(tag) {
 // Älteste zuerst, damit die Tabs in der Reihenfolge kommen, in der du sie
 // gespeichert hast. KI-Tags werden schon beim Blättern übersprungen, damit sie
 // nie die Plätze für deine eigenen Links belegen.
+//
+// Liefert die Lesezeichen und ob die Suche nach MAX_PAGES Seiten abgebrochen
+// wurde, ohne genug zu finden.
 async function collectPending(settings, tagId, limit) {
   const result = [];
   let cursor = null;
+  let pages = 0;
   for (let page = 0; page < MAX_PAGES && result.length < limit; page++) {
+    pages++;
     const q = new URLSearchParams({ sortOrder: "asc", limit: String(PAGE_SIZE), includeContent: "false" });
     if (cursor) q.set("cursor", cursor);
     let data;
@@ -146,7 +245,7 @@ async function collectPending(settings, tagId, limit) {
     cursor = data?.nextCursor;
     if (!cursor) break;
   }
-  return result;
+  return { bookmarks: result, truncated: Boolean(cursor) && pages >= MAX_PAGES && result.length < limit };
 }
 
 function isWebUrl(value) {
@@ -208,6 +307,7 @@ async function runPoll({ force }) {
   await browser.storage.session.remove("waitingForWindow");
 
   const tag = await findTag(settings);
+  const requeued = await recoverHandoffs(settings, tag);
   if (!tag) {
     return { level: "ok", message: `Tag „${settings.tagName}“ gibt es in Karakeep noch nicht.` };
   }
@@ -215,46 +315,79 @@ async function runPoll({ force }) {
   // Der häufigste Fall: nichts zu tun. Die Tag-Liste kennt die Anzahl schon,
   // dann bleibt es bei einer einzigen Anfrage. Ein Klick aufs Symbol sieht
   // trotzdem immer nach.
-  const pending = pendingCount(tag);
+  const pending = pendingCount(tag) + requeued;
   if (pending === 0 && !force) {
     return { level: "ok", opened: 0, remaining: 0, message: "Keine wartenden Links." };
   }
 
-  const batch = await collectPending(settings, tag.id, settings.maxPerRun);
+  const { bookmarks: batch, truncated } = await collectPending(settings, tag.id, settings.maxPerRun);
   let opened = 0;
+  let archiveError = null;
   for (const bm of batch) {
     const url = targetFor(settings, bm);
 
-    // Erst den Tag entfernen, dann öffnen: So kommt kein Link doppelt, auch
-    // wenn zwei Abfragen kurz nacheinander laufen.
+    // Erst vormerken, dann den Tag entfernen, dann öffnen. Das Entfernen vor
+    // dem Öffnen verhindert doppelte Tabs, die Notiz verlorene Links.
+    await setHandoff(bm.id, { server: settings.serverUrl, step: "claim" });
     await setTag(settings, bm.id, tag.id, "DELETE");
     try {
       await openTab(settings, url, titleFor(bm), settings.activateTabs && opened === 0);
     } catch (err) {
       // Öffnen gescheitert, etwa weil gerade das letzte Fenster zuging:
       // Tag wieder setzen, damit der Link beim nächsten Mal erneut kommt.
+      // Klappt auch das nicht, bleibt die Notiz und die nächste Abfrage
+      // setzt den Tag nach.
       const restored = await setTag(settings, bm.id, tag.id, "POST").then(
         () => true,
         () => false,
       );
+      if (restored) await setHandoff(bm.id, null);
       const hint = restored
         ? "Der Link bleibt markiert und kommt beim nächsten Versuch."
-        : `Der Tag ließ sich nicht wieder setzen, bitte ${url} von Hand öffnen.`;
-      throw new PollError(`Tab ließ sich nicht öffnen (${err.message}). ${hint}`, { retryable: restored });
+        : "Der Link ist vorgemerkt und kommt beim nächsten Versuch.";
+      throw new PollError(`Tab ließ sich nicht öffnen (${err.message}). ${hint}`, { retryable: true });
     }
     opened++;
 
-    if (settings.archiveAfterOpen) {
-      await api(settings, `/bookmarks/${encodeURIComponent(bm.id)}`, {
-        method: "PATCH",
-        body: { archived: true },
-      }).catch((e) => console.warn("Karakeep Opener: Archivieren fehlgeschlagen", bm.id, e));
+    if (!settings.archiveAfterOpen) {
+      await setHandoff(bm.id, null);
+      continue;
+    }
+    // Archivieren ist ein eigener Schritt: Scheitert es, wird es später
+    // nachgeholt, ohne den Tab noch einmal zu öffnen.
+    await setHandoff(bm.id, { server: settings.serverUrl, step: "archive" });
+    try {
+      await archive(settings, bm.id);
+      await setHandoff(bm.id, null);
+    } catch (err) {
+      if (!worthRetrying(err)) await setHandoff(bm.id, null);
+      if (!isGone(err)) archiveError ||= err;
     }
   }
 
   const remaining =
     batch.length >= settings.maxPerRun && Number.isFinite(pending) ? Math.max(0, pending - batch.length) : 0;
   let message = opened === 0 ? "Keine wartenden Links." : opened === 1 ? "1 Link geöffnet." : `${opened} Links geöffnet.`;
+
+  if (archiveError) {
+    const later = worthRetrying(archiveError);
+    throw new PollError(
+      `${message} Archivieren in Karakeep gescheitert (${archiveError.message}).${later ? " Wird nachgeholt." : ""}`,
+      { status: archiveError.status, retryable: !(archiveError instanceof PollError) || archiveError.retryable },
+    );
+  }
+
+  // Nur KI-Tags, so weit die Suche reicht: Ohne Hinweis sähe das aus wie eine
+  // leere Liste, obwohl Karakeep wartende Links meldet.
+  if (opened === 0 && truncated && pending > 0) {
+    return {
+      level: "error",
+      opened: 0,
+      remaining: 0,
+      message: `Unter den ersten ${MAX_PAGES * PAGE_SIZE} Lesezeichen mit dem Tag „${settings.tagName}“ war keines von dir markiert, nur von der KI. Bitte einen Tag-Namen wählen, den die KI von Karakeep nicht vergibt.`,
+    };
+  }
+
   if (remaining > 0) message += ` ${remaining} weitere warten, ein Klick aufs Symbol holt die nächsten.`;
   return { level: "ok", opened, remaining, message };
 }
@@ -322,13 +455,30 @@ async function execute(trigger, force) {
   return result;
 }
 
-function poll(trigger, { force = false } = {}) {
+// force: immer in der Liste nachsehen (Klick, Einstellungsseite).
+// fresh: die Einstellungen wurden gerade geändert, eine bereits laufende
+// Abfrage kennt sie noch nicht.
+function poll(trigger, { force = false, fresh = false } = {}) {
   if (!inflight) {
+    inflightForced = force;
     inflight = execute(trigger, force).finally(() => {
       inflight = null;
     });
+    return inflight;
   }
-  return inflight;
+  // Automatische Auslöser hängen sich an die laufende Abfrage an, ebenso ein
+  // Klick während eines anderen Klicks. Kommt ein Klick während einer
+  // automatischen Abfrage oder wurden die Einstellungen geändert, folgt genau
+  // eine erzwungene Abfrage danach, mit den dann gültigen Einstellungen.
+  if (!fresh && !(force && !inflightForced)) return inflight;
+  if (!followUp) {
+    const next = () => {
+      followUp = null;
+      return poll(trigger, { force: true });
+    };
+    followUp = inflight.then(next, next);
+  }
+  return followUp;
 }
 
 // Für automatische Auslöser: höchstens eine Abfrage alle 30 Sekunden.
@@ -400,7 +550,7 @@ browser.storage.onChanged.addListener((changes, area) => {
 
 browser.runtime.onMessage.addListener((msg, sender) => {
   if (sender.id !== browser.runtime.id) return undefined;
-  if (msg && msg.type === "poll-now") return poll("Einstellungen", { force: true });
+  if (msg && msg.type === "poll-now") return poll("Einstellungen", { force: true, fresh: true });
   return undefined;
 });
 
